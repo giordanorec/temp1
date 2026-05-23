@@ -73,3 +73,37 @@ datasets, papers, custos, hardware e casos de sucesso.
 - Custo estimado para 500M em 20B tokens: ~$50-100 em cloud
 
 ---
+
+## 2026-05-23 — Fase 3 concluida: scaffold + arquitetura + pipeline
+
+### Contexto
+
+Apos Discovery (Fase 0), especificacao (Fase 1) e definicao do time
+(Fase 2), executamos o setup completo do projeto.
+
+### O que foi implementado
+
+- **Arquitetura FarolLM** (`src/model/farol.py`): decoder-only
+  Transformer Llama-style com RoPE, SwiGLU, GQA (16Q/4KV), RMSNorm.
+  304M parametros na config padrao.
+- **Tokenizador BPE** (`src/tokenizer/train_bpe.py`): ByteLevel BPE
+  via HuggingFace Tokenizers. Suporta treino de vocab proprio.
+- **Data pipeline** (`src/data/`): MemmapDataset (numpy memmap uint16)
+  + tokenizacao de corpus.
+- **Training loop** (`src/train/trainer.py`): gradient accumulation,
+  clipping, WSD scheduler (MiniCPM), autocast, checkpointing.
+- **Configs**: `farol-300m.yaml` (producao) + `farol-small.yaml` (smoke).
+- **19 testes passando**: modelo, tokenizador, treino, end-to-end.
+
+### Smoke test validado
+
+Pipeline end-to-end: treinar tokenizador -> tokenizar corpus ->
+criar dataset memmap -> treinar modelo 2-layer 10 steps -> gerar texto.
+Tudo verde.
+
+### Proximos passos
+
+- Fase 0 (Fundacao): reproduzir nanochat localmente no Mac Mini M4
+- Em paralelo: aplicar para Google TRC e/ou NVIDIA Academic Grant
+
+---
