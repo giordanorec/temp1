@@ -40,8 +40,14 @@ venv/
 .venv/
 .uv/
 
-# data
+# data & checkpoints
 data/raw/
+data/tokenized/
+checkpoints/
+*.bin
+*.npy
+*.memmap
+wandb/
 
 # deploy
 .vercel

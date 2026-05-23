@@ -1,0 +1,50 @@
+# FarolLM 300M — configuracao de pre-treinamento
+# Hardware alvo: Mac Mini M4 64GB (prototipagem) / Cloud GPUs (producao)
+
+model:
+  vocab_size: 32768
+  hidden_size: 1024
+  intermediate_size: 2816
+  num_layers: 24
+  num_heads: 16
+  num_kv_heads: 4
+  max_seq_len: 2048
+  dropout: 0.0
+  rope_theta: 10000.0
+  rms_norm_eps: 1.0e-5
+  tie_word_embeddings: true
+
+training:
+  batch_size: 4                # micro batch (por GPU)
+  gradient_accumulation_steps: 8  # effective batch = 32
+  max_steps: 100000
+  learning_rate: 3.0e-4
+  min_learning_rate: 3.0e-5
+  warmup_steps: 2000
+  weight_decay: 0.1
+  grad_clip: 1.0
+  dtype: bfloat16              # bf16 no M4 (MPS) ou GPUs Ampere+
+  compile: false               # torch.compile (desativar no MPS)
+
+scheduler:
+  type: wsd                    # Warmup-Stable-Decay (MiniCPM-style)
+  warmup_fraction: 0.02
+  stable_fraction: 0.78
+  decay_fraction: 0.20
+
+data:
+  train_path: data/tokenized/train.bin
+  val_path: data/tokenized/val.bin
+  seq_len: 2048
+
+checkpointing:
+  save_every_steps: 5000
+  output_dir: checkpoints/farol-300m
+  keep_last_n: 3
+
+logging:
+  wandb_project: farol-lm
+  wandb_run_name: farol-300m-v1
+  log_every_steps: 10
+  eval_every_steps: 500
+  eval_steps: 50
