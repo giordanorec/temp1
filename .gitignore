@@ -1,0 +1,48 @@
+# Opção B — working memory e logs não versionados
+logs/
+sessions.json
+status/*.json
+memory/*/
+!memory/.gitkeep
+
+# ambiente
+.env
+.env.local
+.env.*.local
+
+# sistema
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# editor
+.vscode/
+.idea/
+
+# Node
+node_modules/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+coverage/
+.nyc_output/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+venv/
+.venv/
+.uv/
+
+# data
+data/raw/
+
+# deploy
+.vercel
+.netlify
