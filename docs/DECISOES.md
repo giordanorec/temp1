@@ -107,3 +107,32 @@ Tudo verde.
 - Em paralelo: aplicar para Google TRC e/ou NVIDIA Academic Grant
 
 ---
+
+## 2026-05-24 — Estrategia de compute grants
+
+### Contexto
+
+Hardware primario (M4 64GB) limita treinamento a ~500M params com
+throughput lento. Precisamos de compute externo para a Fase 4+.
+
+### Decisao
+
+Aplicar para multiplos programas de compute em paralelo. Nenhum e
+mutuamente exclusivo. Propostas rascunhadas em `docs/PROPOSTAS_COMPUTE.md`.
+
+### Programas mapeados (7 total)
+
+1. Google TPU Research Cloud (TPUs gratis, 3-4 dias)
+2. Google Cloud Research Credits (ate $5.000, 4-6 semanas)
+3. NVIDIA Academic Grant (ate 30.000h H100, precisa PI)
+4. AWS Cloud Credit for Research (ate $5.000, 90-120 dias)
+5. Kaggle (TPU v3-8 gratis, imediato)
+6. Lambda Labs Research Credits (ate $5.000)
+7. CoreWeave Academic Program (verificar disponibilidade)
+
+### Acao imediata
+
+Aplicar ao Google TRC esta semana. Criar conta Kaggle para prototipar
+em TPU. Demais programas em sequencia nas proximas semanas.
+
+---
