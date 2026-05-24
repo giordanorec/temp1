@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 
 @dataclass
@@ -135,6 +136,7 @@ class FarolLM(nn.Module):
     def __init__(self, config: FarolConfig):
         super().__init__()
         self.config = config
+        self.gradient_checkpointing = False
         self.tok_emb = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList(
             [TransformerBlock(config) for _ in range(config.num_layers)]
@@ -152,6 +154,12 @@ class FarolLM(nn.Module):
         )
         self.apply(self._init_weights)
 
+    def enable_gradient_checkpointing(self) -> None:
+        self.gradient_checkpointing = True
+
+    def disable_gradient_checkpointing(self) -> None:
+        self.gradient_checkpointing = False
+
     def _init_weights(self, module: nn.Module) -> None:
         if isinstance(module, nn.Linear):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
@@ -165,7 +173,10 @@ class FarolLM(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         x = self.tok_emb(idx)
         for layer in self.layers:
-            x = layer(x, self.rope_freqs)
+            if self.gradient_checkpointing and self.training:
+                x = torch_checkpoint(layer, x, self.rope_freqs, use_reentrant=False)
+            else:
+                x = layer(x, self.rope_freqs)
         x = self.norm(x)
         logits = self.lm_head(x)
 
