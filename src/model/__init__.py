@@ -1,1 +1,1 @@
-from src.model.farol import FarolLM, FarolConfig
+from src.model.farol import FarolLM, FarolConfig, MTPHead

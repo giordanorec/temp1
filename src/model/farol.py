@@ -29,6 +29,10 @@ class FarolConfig:
     logit_soft_cap: float = 0.0  # 0 = disabled, 30.0 = Gemma-2 style
     embedding_multiplier: float = 1.0  # sqrt(d_model) scaling
     z_loss_weight: float = 0.0  # 1e-4 = PaLM/Gemma style
+    nope_layer_interval: int = 0  # >0: remove RoPE every Nth layer (SmolLM3/Llama4 iRoPE)
+    sliding_window: int = 0  # >0: local sliding window attention (Gemma-3 style)
+    global_attention_interval: int = 6  # every Nth layer uses full attention (Gemma-3: 6)
+    mtp_depth: int = 0  # >0: multi-token prediction heads (DeepSeek-V3)
 
     @property
     def head_dim(self) -> int:
@@ -77,12 +81,25 @@ def apply_rope(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
 
 
 class GQAttention(nn.Module):
-    def __init__(self, config: FarolConfig):
+    def __init__(self, config: FarolConfig, layer_idx: int = 0):
         super().__init__()
         self.num_heads = config.num_heads
         self.num_kv_heads = config.num_kv_heads
         self.head_dim = config.head_dim
         self.num_kv_groups = config.num_heads // config.num_kv_heads
+        self.layer_idx = layer_idx
+
+        # NoPE: remove RoPE every Nth layer (SmolLM3/Llama4 iRoPE)
+        self.use_rope = True
+        if config.nope_layer_interval > 0:
+            self.use_rope = ((layer_idx + 1) % config.nope_layer_interval) != 0
+
+        # Sliding window: local attention on most layers, global on every Nth
+        self.sliding_window = 0
+        if config.sliding_window > 0:
+            is_global = ((layer_idx + 1) % config.global_attention_interval) == 0
+            if not is_global:
+                self.sliding_window = config.sliding_window
 
         self.q_proj = nn.Linear(config.hidden_size, config.num_heads * self.head_dim, bias=False)
         self.k_proj = nn.Linear(config.hidden_size, config.num_kv_heads * self.head_dim, bias=False)
@@ -97,6 +114,14 @@ class GQAttention(nn.Module):
             self.q_norm = None
             self.k_norm = None
 
+    def _make_sliding_window_mask(self, T: int, device: torch.device) -> torch.Tensor:
+        mask = torch.ones(T, T, dtype=torch.bool, device=device).tril()
+        if self.sliding_window > 0:
+            mask = mask & torch.ones(T, T, dtype=torch.bool, device=device).triu(
+                -(self.sliding_window - 1)
+            )
+        return mask
+
     def forward(self, x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
         B, T, _ = x.shape
 
@@ -108,16 +133,26 @@ class GQAttention(nn.Module):
             q = self.q_norm(q)
             k = self.k_norm(k)
 
-        q = apply_rope(q, freqs)
-        k = apply_rope(k, freqs)
+        if self.use_rope:
+            q = apply_rope(q, freqs)
+            k = apply_rope(k, freqs)
 
         if self.num_kv_groups > 1:
             k = k.repeat_interleave(self.num_kv_groups, dim=1)
             v = v.repeat_interleave(self.num_kv_groups, dim=1)
 
-        out = F.scaled_dot_product_attention(
-            q, k, v, is_causal=True, dropout_p=self.dropout if self.training else 0.0
-        )
+        if self.sliding_window > 0:
+            attn_mask = self._make_sliding_window_mask(T, x.device)
+            out = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=attn_mask,
+                dropout_p=self.dropout if self.training else 0.0,
+            )
+        else:
+            out = F.scaled_dot_product_attention(
+                q, k, v, is_causal=True,
+                dropout_p=self.dropout if self.training else 0.0,
+            )
+
         out = out.transpose(1, 2).contiguous().view(B, T, -1)
         return self.o_proj(out)
 
@@ -134,10 +169,10 @@ class SwiGLU(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, config: FarolConfig):
+    def __init__(self, config: FarolConfig, layer_idx: int = 0):
         super().__init__()
         self.attn_norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
-        self.attn = GQAttention(config)
+        self.attn = GQAttention(config, layer_idx=layer_idx)
         self.ffn_norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.ffn = SwiGLU(config)
 
@@ -154,7 +189,7 @@ class FarolLM(nn.Module):
         self.gradient_checkpointing = False
         self.tok_emb = nn.Embedding(config.vocab_size, config.hidden_size)
         self.layers = nn.ModuleList(
-            [TransformerBlock(config) for _ in range(config.num_layers)]
+            [TransformerBlock(config, layer_idx=i) for i in range(config.num_layers)]
         )
         self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
@@ -245,3 +280,66 @@ class FarolLM(nn.Module):
             idx_next = torch.multinomial(probs, num_samples=1)
             idx = torch.cat([idx, idx_next], dim=1)
         return idx
+
+
+class MTPHead(nn.Module):
+    """Multi-Token Prediction head (DeepSeek-V3 style).
+
+    Predicts D future tokens using lightweight projection + transformer block.
+    Provides denser training signals and enables speculative decoding.
+    """
+
+    def __init__(self, config: FarolConfig, depth: int = 1):
+        super().__init__()
+        self.depth = depth
+        self.heads = nn.ModuleList()
+        for _ in range(depth):
+            self.heads.append(nn.ModuleDict({
+                "proj": nn.Linear(config.hidden_size * 2, config.hidden_size, bias=False),
+                "norm": RMSNorm(config.hidden_size, config.rms_norm_eps),
+                "lm_head": nn.Linear(config.hidden_size, config.vocab_size, bias=False),
+            }))
+
+    def forward(
+        self,
+        hidden: torch.Tensor,
+        tok_emb: nn.Embedding,
+        targets: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute MTP loss for D future tokens.
+
+        Args:
+            hidden: final hidden states from backbone [B, T, D]
+            tok_emb: embedding layer (for ground-truth future token embeddings)
+            targets: target token ids [B, T] (shifted by 1 as usual)
+        """
+        total_loss = 0.0
+        B, T, D = hidden.shape
+        h = hidden
+
+        for d, head in enumerate(self.heads):
+            target_offset = d + 1
+            if target_offset >= T:
+                break
+
+            future_ids = targets[:, target_offset:]
+            h_trunc = h[:, : future_ids.shape[1], :]
+            future_emb = tok_emb(future_ids)
+
+            combined = torch.cat([h_trunc, future_emb], dim=-1)
+            h_next = head["proj"](combined)
+            h_next = head["norm"](h_next)
+
+            logits = head["lm_head"](h_next)
+
+            shifted_targets = targets[:, target_offset : target_offset + h_next.shape[1]]
+            if shifted_targets.shape[1] > 0:
+                loss = F.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    shifted_targets.reshape(-1),
+                )
+                total_loss = total_loss + loss
+
+            h = h_next
+
+        return total_loss / max(self.depth, 1)
