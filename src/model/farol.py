@@ -25,6 +25,10 @@ class FarolConfig:
     rope_theta: float = 10000.0
     rms_norm_eps: float = 1e-5
     tie_word_embeddings: bool = True
+    qk_norm: bool = True
+    logit_soft_cap: float = 0.0  # 0 = disabled, 30.0 = Gemma-2 style
+    embedding_multiplier: float = 1.0  # sqrt(d_model) scaling
+    z_loss_weight: float = 0.0  # 1e-4 = PaLM/Gemma style
 
     @property
     def head_dim(self) -> int:
@@ -86,12 +90,23 @@ class GQAttention(nn.Module):
         self.o_proj = nn.Linear(config.num_heads * self.head_dim, config.hidden_size, bias=False)
         self.dropout = config.dropout
 
+        if config.qk_norm:
+            self.q_norm = RMSNorm(self.head_dim, config.rms_norm_eps)
+            self.k_norm = RMSNorm(self.head_dim, config.rms_norm_eps)
+        else:
+            self.q_norm = None
+            self.k_norm = None
+
     def forward(self, x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
         B, T, _ = x.shape
 
         q = self.q_proj(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
         k = self.k_proj(x).view(B, T, self.num_kv_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(x).view(B, T, self.num_kv_heads, self.head_dim).transpose(1, 2)
+
+        if self.q_norm is not None:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
 
         q = apply_rope(q, freqs)
         k = apply_rope(k, freqs)
@@ -168,23 +183,47 @@ class FarolLM(nn.Module):
         elif isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
+    def _apply_depth_scaled_init(self) -> None:
+        """Scale residual output projections by 1/sqrt(2*num_layers) (GPT-2/DeepSeek style)."""
+        depth_std = 0.02 / math.sqrt(2 * self.config.num_layers)
+        for layer in self.layers:
+            nn.init.normal_(layer.attn.o_proj.weight, mean=0.0, std=depth_std)
+            nn.init.normal_(layer.ffn.down_proj.weight, mean=0.0, std=depth_std)
+
     def forward(
         self, idx: torch.Tensor, targets: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         x = self.tok_emb(idx)
+        if self.config.embedding_multiplier != 1.0:
+            x = x * self.config.embedding_multiplier
+
         for layer in self.layers:
             if self.gradient_checkpointing and self.training:
                 x = torch_checkpoint(layer, x, self.rope_freqs, use_reentrant=False)
             else:
                 x = layer(x, self.rope_freqs)
         x = self.norm(x)
+
+        if self.config.tie_word_embeddings and self.training:
+            x = x - x.mean(dim=-1, keepdim=True)
+
         logits = self.lm_head(x)
+
+        if self.config.logit_soft_cap > 0:
+            logits = self.config.logit_soft_cap * torch.tanh(
+                logits / self.config.logit_soft_cap
+            )
 
         loss = None
         if targets is not None:
             loss = F.cross_entropy(
                 logits.view(-1, logits.size(-1)), targets.view(-1)
             )
+            if self.config.z_loss_weight > 0:
+                log_z = torch.logsumexp(logits.view(-1, logits.size(-1)), dim=-1)
+                z_loss = log_z.square().mean()
+                loss = loss + self.config.z_loss_weight * z_loss
+
         return logits, loss
 
     @torch.no_grad()

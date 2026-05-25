@@ -28,6 +28,7 @@ def test_save_and_load():
         assert loaded_config.num_layers == config.num_layers
 
         x = torch.randint(0, 512, (1, 32))
+        model.eval()
         with torch.no_grad():
             logits_orig, _ = model(x)
             logits_loaded, _ = loaded_model(x)

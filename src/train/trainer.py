@@ -16,27 +16,41 @@ from src.model.farol import FarolConfig, FarolLM
 
 
 def get_lr(step: int, config: dict) -> float:
-    """Warmup-Stable-Decay (WSD) scheduler from MiniCPM."""
+    """Learning rate scheduler. Supports WSD, linear D2Z, and cosine."""
     max_steps = config["training"]["max_steps"]
     max_lr = config["training"]["learning_rate"]
-    min_lr = config["training"]["min_learning_rate"]
+    min_lr = config["training"].get("min_learning_rate", 0.0)
 
     sched = config.get("scheduler", {})
+    sched_type = sched.get("type", "wsd")
     warmup_frac = sched.get("warmup_fraction", 0.02)
-    stable_frac = sched.get("stable_fraction", 0.78)
-
     warmup_steps = int(max_steps * warmup_frac)
-    stable_steps = int(max_steps * stable_frac)
-    decay_start = warmup_steps + stable_steps
 
     if step < warmup_steps:
         return max_lr * (step + 1) / warmup_steps
-    elif step < decay_start:
-        return max_lr
-    else:
+
+    if sched_type == "linear_d2z":
+        # Linear decay-to-zero (2025 SOTA, Hagele et al.)
+        # 60% compute savings over cosine-10x
+        progress = (step - warmup_steps) / max(max_steps - warmup_steps, 1)
+        return max_lr * (1 - progress)
+
+    elif sched_type == "wsd":
+        # Warmup-Stable-Decay (MiniCPM / SmolLM3)
+        stable_frac = sched.get("stable_fraction", 0.78)
+        stable_steps = int(max_steps * stable_frac)
+        decay_start = warmup_steps + stable_steps
+        if step < decay_start:
+            return max_lr
         decay_steps = max_steps - decay_start
         progress = (step - decay_start) / max(decay_steps, 1)
         return min_lr + 0.5 * (max_lr - min_lr) * (1 + math.cos(math.pi * progress))
+
+    elif sched_type == "cosine":
+        progress = (step - warmup_steps) / max(max_steps - warmup_steps, 1)
+        return min_lr + 0.5 * (max_lr - min_lr) * (1 + math.cos(math.pi * progress))
+
+    return max_lr
 
 
 def train(config_path: str, dataset=None):
@@ -58,16 +72,17 @@ def train(config_path: str, dataset=None):
     elif train_cfg.get("dtype") == "float16":
         dtype = torch.float16
 
-    model = FarolLM(model_cfg).to(device)
+    model = FarolLM(model_cfg)
+    model._apply_depth_scaled_init()
+    if train_cfg.get("gradient_checkpointing", False):
+        model.enable_gradient_checkpointing()
+    model = model.to(device)
+
     n_params = sum(p.numel() for p in model.parameters())
     print(f"FarolLM: {n_params:,} params on {device} ({dtype})")
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=train_cfg["learning_rate"],
-        weight_decay=train_cfg["weight_decay"],
-        betas=(0.9, 0.95),
-    )
+    from src.train.optimizers import create_optimizer
+    optimizer = create_optimizer(model, config)
 
     if dataset is None:
         from src.data.dataset import RandomTokenDataset
@@ -82,7 +97,9 @@ def train(config_path: str, dataset=None):
         batch_size=train_cfg["batch_size"],
         shuffle=True,
         drop_last=True,
-        num_workers=0,
+        num_workers=min(4, os.cpu_count() or 1),
+        pin_memory=(device == "cuda"),
+        persistent_workers=True if (os.cpu_count() or 1) > 1 else False,
     )
 
     grad_accum = train_cfg["gradient_accumulation_steps"]
