@@ -1,0 +1,138 @@
+# DECISOES.md — log cronologico vivo
+
+Cada entrada e uma decisao nao-trivial com contexto. Preencher no
+mesmo commit que materializa a decisao.
+
+---
+
+## 2026-05-23 — Inicio do projeto FarolLM
+
+### Contexto
+
+Giordano quer entender a fundo como se cria uma LLM, treinando uma do
+zero. Tem contatos em Oxford, Stanford, Sorbonne que confirmam que
+recriar coisas prontas e viavel. Quer um projeto puramente seu,
+documentado, e aberto.
+
+### Decisao
+
+- **Nome**: FarolLM
+- **Tipo**: SLM (Small Language Model), 300-500M parametros
+- **Lingua**: Multilingual (portugues + ingles + code)
+- **Dominio**: General purpose inicialmente; especializacao futura
+  (codigo, juridico, educacao ou musica — a definir)
+- **Stack**: Python/PyTorch + LitGPT + HF Tokenizers + TRL
+- **Hardware**: Mac Mini M4 64GB (prototipagem) + cloud GPUs (futuro)
+- **Operador**: Uso academico (UFPE)
+- **Compliance**: LGPD nao se aplica (dados publicos)
+- **Time de agentes**: arquiteto + pipeline-dev + devops-installer +
+  qa-tester + docs-writer (4 especialistas)
+
+### Por que / alternativas
+
+- **LitGPT sobre nanochat**: nanochat e educacional (Fase 0), LitGPT
+  e producao. Usamos os dois em fases diferentes.
+- **PyTorch sobre JAX**: ecossistema mais maduro, Apple MPS suportado,
+  mais material educacional. JAX seria melhor com TPUs (Google TRC),
+  pode ser explorado na Fase 4.
+- **300-500M sobre 1B+**: sweet spot para M4 64GB. Grande o suficiente
+  para capacidades emergentes, pequeno o suficiente para iterar rapido.
+- **Decoder-only sobre encoder-decoder**: padrao para geracao de texto,
+  mais simples, melhor documentado.
+- **FineWeb-2 + CulturaX**: melhor cobertura multilingual aberta
+  disponivel. FineWeb-2 tem 1000+ idiomas, CulturaX tem forte presenca
+  de portugues.
+
+### Consequencias
+
+- Fase 0 (nanochat) bloqueia tudo — e a fundacao de entendimento.
+- M4 limita a ~500M params confortavel; scaling precisa de cloud.
+- Precisa aplicar para compute grants (Google TRC, NVIDIA) em paralelo
+  com Fase 0-1.
+
+---
+
+## 2026-05-23 — Pesquisa do ecossistema
+
+### Contexto
+
+Antes de comecar, fizemos varredura completa do que existe disponivel.
+
+### Decisao
+
+Documento completo em `docs/PESQUISA_LLM.md`. Cobre frameworks,
+datasets, papers, custos, hardware e casos de sucesso.
+
+### Destaques
+
+- OLMo (AI2) e o unico modelo 100% reproduzivel (codigo + dados + logs)
+- nanochat (Karpathy) e o melhor ponto de partida educacional (~$100)
+- TinyLlama provou que 1.1B em 3T tokens funciona em 16xA100 em 90 dias
+- FineWeb-2 tem 15T tokens em 1000+ idiomas (maior dataset aberto)
+- Google TRC oferece TPUs gratis para pesquisadores (aceita internacionais)
+- Custo estimado para 500M em 20B tokens: ~$50-100 em cloud
+
+---
+
+## 2026-05-23 — Fase 3 concluida: scaffold + arquitetura + pipeline
+
+### Contexto
+
+Apos Discovery (Fase 0), especificacao (Fase 1) e definicao do time
+(Fase 2), executamos o setup completo do projeto.
+
+### O que foi implementado
+
+- **Arquitetura FarolLM** (`src/model/farol.py`): decoder-only
+  Transformer Llama-style com RoPE, SwiGLU, GQA (16Q/4KV), RMSNorm.
+  304M parametros na config padrao.
+- **Tokenizador BPE** (`src/tokenizer/train_bpe.py`): ByteLevel BPE
+  via HuggingFace Tokenizers. Suporta treino de vocab proprio.
+- **Data pipeline** (`src/data/`): MemmapDataset (numpy memmap uint16)
+  + tokenizacao de corpus.
+- **Training loop** (`src/train/trainer.py`): gradient accumulation,
+  clipping, WSD scheduler (MiniCPM), autocast, checkpointing.
+- **Configs**: `farol-300m.yaml` (producao) + `farol-small.yaml` (smoke).
+- **19 testes passando**: modelo, tokenizador, treino, end-to-end.
+
+### Smoke test validado
+
+Pipeline end-to-end: treinar tokenizador -> tokenizar corpus ->
+criar dataset memmap -> treinar modelo 2-layer 10 steps -> gerar texto.
+Tudo verde.
+
+### Proximos passos
+
+- Fase 0 (Fundacao): reproduzir nanochat localmente no Mac Mini M4
+- Em paralelo: aplicar para Google TRC e/ou NVIDIA Academic Grant
+
+---
+
+## 2026-05-24 — Estrategia de compute grants
+
+### Contexto
+
+Hardware primario (M4 64GB) limita treinamento a ~500M params com
+throughput lento. Precisamos de compute externo para a Fase 4+.
+
+### Decisao
+
+Aplicar para multiplos programas de compute em paralelo. Nenhum e
+mutuamente exclusivo. Propostas rascunhadas em `docs/PROPOSTAS_COMPUTE.md`.
+
+### Programas mapeados (7 total)
+
+1. Google TPU Research Cloud (TPUs gratis, 3-4 dias)
+2. Google Cloud Research Credits (ate $5.000, 4-6 semanas)
+3. NVIDIA Academic Grant (ate 30.000h H100, precisa PI)
+4. AWS Cloud Credit for Research (ate $5.000, 90-120 dias)
+5. Kaggle (TPU v3-8 gratis, imediato)
+6. Lambda Labs Research Credits (ate $5.000)
+7. CoreWeave Academic Program (verificar disponibilidade)
+
+### Acao imediata
+
+Aplicar ao Google TRC esta semana. Criar conta Kaggle para prototipar
+em TPU. Demais programas em sequencia nas proximas semanas.
+
+---

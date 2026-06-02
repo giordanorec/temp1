@@ -1,0 +1,69 @@
+# FarolLM 300M — config SOTA 2025-2026
+# Hardware alvo: Mac Mini M4 64GB (prototipagem) / Cloud GPUs (producao)
+#
+# Avancos incluidos:
+#   - QK-Norm (DeepSeek-V3, OLMo 2/3) — estabilidade na attention
+#   - NoPE/iRoPE a cada 4a camada (SmolLM3, Llama 4) — melhor long-context
+#   - Sliding window 512 + global a cada 6 layers (Gemma 3) — memoria reduzida
+#   - Logit soft-capping 30.0 (Gemma 2) — previne overconfidence
+#   - Z-loss 1e-4 (PaLM/Gemma) — estabilidade do softmax
+#   - Embedding scaling sqrt(1024) (Transformer original)
+#   - Muon optimizer para 2D weights (Keller Jordan 2025) — ~35% mais rapido
+#   - Linear D2Z schedule (Hagele 2025) — 60% savings vs cosine
+#   - Gradient checkpointing — essencial para M4 64GB
+
+model:
+  vocab_size: 32768
+  hidden_size: 1024
+  intermediate_size: 2816
+  num_layers: 24
+  num_heads: 16
+  num_kv_heads: 4               # GQA: 4 KV groups (Llama-style)
+  max_seq_len: 2048
+  dropout: 0.0
+  rope_theta: 10000.0
+  rms_norm_eps: 1.0e-5
+  tie_word_embeddings: true
+  qk_norm: true                 # RMSNorm on Q and K (DeepSeek-V3, OLMo 2/3)
+  logit_soft_cap: 30.0          # Gemma-2 style output logit capping
+  embedding_multiplier: 32.0    # sqrt(1024) embedding scaling
+  z_loss_weight: 1.0e-4         # PaLM/Gemma softmax stabilization
+  nope_layer_interval: 4        # Remove RoPE every 4th layer (SmolLM3/Llama4 iRoPE)
+  sliding_window: 512           # Local attention window (Gemma-3 style)
+  global_attention_interval: 6  # Full attention every 6th layer
+  mtp_depth: 0                  # Multi-token prediction (set 1-2 for DeepSeek-V3 style)
+
+training:
+  optimizer: muon                # Muon for 2D weights + AdamW for embeddings/norms
+  muon_lr: 0.02                  # Muon learning rate (higher than AdamW)
+  batch_size: 4                  # micro batch (per GPU)
+  gradient_accumulation_steps: 8 # effective batch = 32
+  gradient_checkpointing: true   # essential for M4 64GB (~60-70% VRAM savings)
+  max_steps: 100000
+  learning_rate: 3.0e-4          # AdamW LR (embeddings, norms)
+  min_learning_rate: 0.0         # decay to zero (D2Z)
+  weight_decay: 0.1              # decoupled AdamW weight decay
+  grad_clip: 1.0
+  dtype: bfloat16                # bf16 on M4 (MPS) or Ampere+ GPUs
+  compile: false                 # torch.compile (disable on MPS)
+
+scheduler:
+  type: linear_d2z               # Linear decay-to-zero (Hagele 2025, SOTA)
+  warmup_fraction: 0.02          # 2% warmup
+
+data:
+  train_path: data/tokenized/train.bin
+  val_path: data/tokenized/val.bin
+  seq_len: 2048
+
+checkpointing:
+  save_every_steps: 5000
+  output_dir: checkpoints/farol-300m
+  keep_last_n: 3
+
+logging:
+  wandb_project: farol-lm
+  wandb_run_name: farol-300m-sota
+  log_every_steps: 10
+  eval_every_steps: 500
+  eval_steps: 50
